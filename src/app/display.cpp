@@ -21,9 +21,9 @@ int8_t Display::draw() {
     do {
         uint8_t footer = height - display.getMaxCharHeight() - 2;
         display.drawHLine(0, footer, width);
-        sprintf(timebuff, "%02d%02d:%02d", hour(time_remaining), minute(time_remaining), second(time_remaining));
+        sprintf(timebuff, "%02d:%02d:%02d", hour(time_remaining), minute(time_remaining), second(time_remaining));
         if (*state == AppState::ACTIVE) {
-            display.setFont(u8g2_font_ncenB24_te);
+            display.setFont(u8g2_font_ncenB18_te);
             display.drawStr(
                     width / 2 - (display.getStrWidth(timebuff))/2,
                     (height - footer) / 2  + display.getMaxCharHeight() / 2,
@@ -60,7 +60,7 @@ int8_t Display::draw() {
             }
         }
         if (time_now != 0) {
-            sprintf(timebuff, "%02d%02d:%02d", hour(time_now), minute(time_now), second(time_now));
+            sprintf(timebuff, "%02d:%02d:%02d", hour(time_now), minute(time_now), second(time_now));
             display.setFont(u8g2_font_ncenB10_tr);
             display.drawStr(
                     width - display.getStrWidth(timebuff),

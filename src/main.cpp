@@ -26,6 +26,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0);
 WiFiManager wifiManager;
 Neotimer enabled_timer;
+Neotimer message_timer = Neotimer(60000);
 
 char request_buffer[512] = {0};
 ESP8266WiFiMulti WiFiMulti;
@@ -42,15 +43,15 @@ Display display(u8g2, &state);
 Neotimer terminated_message_timer = Neotimer(15000);
 
 void enable_hdmi(){
-    digitalWrite(D0, HIGH);
-    digitalWrite(D7, HIGH);
-    //digitalWrite(D6, HIGH);
+    analogWrite(D0, 0);
+    //digitalWrite(D7, HIGH);
+    analogWrite(D6, 0);
 }
 
 void disable_hdmi(){
-    digitalWrite(D0, LOW);
-    digitalWrite(D7, LOW);
-    //digitalWrite(D6, LOW);
+    analogWrite(D0, 128);
+    //digitalWrite(D7, HIGH);
+    analogWrite(D6, 128);
 }
 
 
@@ -125,6 +126,7 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
                     break;
                 }
                 case Commands::MESSAGE: {
+                    message_timer.start();
                     String text = doc["result"]["data"]["data"]["message"]["text"];
                     Log.noticeln(F("Got a message %s"), text.c_str());
                     last_state=state;
@@ -157,8 +159,9 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
 
 void setup() {
     pinMode(D0, OUTPUT);
-    pinMode(D7, OUTPUT);
-    //pinMode(D6, OUTPUT);
+    pinMode(D7, INPUT);
+    pinMode(D6, OUTPUT);
+    analogWriteFreq(100);
     disable_hdmi();
     Serial.begin(115200);
     Log.begin(LOG_LEVEL, &Serial);
@@ -253,18 +256,12 @@ void setup() {
     display.message = "Ready to serve";
     display.draw();
 }
-Neotimer message_timer = Neotimer(15000);
 
 void loop() {
     //Remove termination message when timer expires
     if (terminated_message_timer.done()) {
         terminated_message_timer.stop();
         display.message = "Ready to serve";
-    }
-
-    //Show message for some time
-    if (state == AppState::GOT_MESSAGE && !message_timer.started()){
-        message_timer.start();
     }
 
     //When message timer expires, remove message from screen
@@ -288,11 +285,8 @@ void loop() {
     display.time_now = timeClient.getEpochTime();
     display.time_remaining = enabled_timer.started() ? (enabled_timer.get() - enabled_timer.getEllapsed()) / 1000 : 0;
 
-    // display accepts state as pointer, so no need to update it explicitly for the display as well
+    // display accepts state as a pointer, so no need to update it explicitly for the display as well
     display.draw();
 
     webSocket.loop();
-    if (webSocket.isConnected()) {
-        delay(100);
-    }
 }
