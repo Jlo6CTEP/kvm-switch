@@ -28,6 +28,8 @@
     #define AP_PASSWORD "kotikiii"
     #define RETRY_COUNT 5
 
+    #define SERIAL_CONFIG_COMMAND "config"
+
 
     enum Commands {
         START,

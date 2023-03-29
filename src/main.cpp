@@ -31,11 +31,12 @@ Neotimer message_timer = Neotimer(60000);
 char request_buffer[512] = {0};
 ESP8266WiFiMulti WiFiMulti;
 WebSocketsClient webSocket;
-char uuid[37];
 uint32_t id;
 uint32_t club_id;
+EEPROM_Config config = {{0}, {0}};
 String token = "";
 
+// display also uses this state for it is passed by-pointer
 uint8_t state = AppState::BOOTING;
 uint8_t last_state = AppState::BOOTING;
 
@@ -157,6 +158,10 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     }
 }
 
+void save_config() {
+
+}
+
 void setup() {
     pinMode(D0, OUTPUT);
     pinMode(D7, INPUT);
@@ -166,6 +171,12 @@ void setup() {
     Serial.begin(115200);
     Log.begin(LOG_LEVEL, &Serial);
     wifiManager.setDebugOutput(DEBUG);
+    wifiManager.setBreakAfterConfig(true);
+    wifiManager.setSaveConfigCallback(save_config);
+
+    WiFiManagerParameter uuid_param("uuid", "uuid", "", UUID_LEN);
+    WiFiManagerParameter host("host", "host", REST_);
+
     Serial.setDebugOutput(DEBUG);
     display.begin();
 
@@ -179,11 +190,11 @@ void setup() {
     }
 
     Log.verboseln(F("Fetching UUID"));
-    fetch_uuid(uuid);
+
+    fetch_parameters(&config);
     // 12 from UUID + 4 from KVM- + 1 terminator
     char ap_name[17] = "KVM";
-    memcpy(ap_name+3, uuid + 23, 13);
-
+    memcpy(ap_name+3, config.uuid + 23, 13);
 
     Log.verboseln(F("Launching captive portal with AP name %s"), ap_name);
 
@@ -236,7 +247,7 @@ void setup() {
     display.message = "Authorising...";
     display.draw();
     Log.noticeln(F("Activating the device"));
-    activate_device(String(uuid), &club_id, display);
+    activate_device(String(con ), &club_id, display);
     heap_stats();
 
     Log.noticeln(F("Authorizing the device to club %d"), club_id);
@@ -258,20 +269,23 @@ void setup() {
 }
 
 void loop() {
-    //Remove termination message when timer expires
+    //Remove the termination message when timer expires
     if (terminated_message_timer.done()) {
         terminated_message_timer.stop();
-        display.message = "Ready to serve";
+        if (!message_timer.waiting()) {
+            display.message = "Ready to serve";
+        }
     }
 
-    //When message timer expires, remove message from screen
+    //When the message timer expires, remove the message from screen
     if (message_timer.done()) {
         message_timer.stop();
         state = last_state;
         Log.noticeln(F("Changing state to %d"), state);
+        display.message = "Ready to serve";
     }
 
-    //Terminate user session
+    //Terminate the user session
     if (enabled_timer.done()) {
         disable_hdmi();
         enabled_timer.stop();
@@ -289,4 +303,16 @@ void loop() {
     display.draw();
 
     webSocket.loop();
+
+    if (Serial.available()) {
+        char buffer[10] = {0};
+        Serial.readBytesUntil('\n', buffer, 10);
+
+        if (strcmp(buffer, SERIAL_CONFIG_COMMAND) != 0) {
+            return;
+        }
+
+
+    }
+
 }
