@@ -13,4 +13,11 @@ typedef struct {
     char host[REST_HOST_LEN+1];
 } EEPROM_Config;
 
-void fetch_parameters(EEPROM_Config * config);
+void fetch_settings(EEPROM_Config * config);
+
+void store_settings(EEPROM_Config * config);
+
+uint8_t is_first_launch();
+
+void generate_default_settings(EEPROM_Config *config);
+

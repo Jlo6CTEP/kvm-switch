@@ -5,11 +5,11 @@
 #include <WiFiManager.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-#include <TimeLib.h>
 #include <ArduinoJson.h>
 #include <WebSocketsClient.h>
 #include <ArduinoLog.h>
 #include <timeSync.h>
+#include <EEPROM.h>
 #include "utility/fetch_uuid.h"
 #include "utility/api_utils.h"
 #include "utility/retry_command.h"
@@ -17,9 +17,10 @@
 #include "config.h"
 #include "app/display.h"
 #include "neotimer.h"
-#include "error_codes.h"
+#include "reboot_reasons.h"
 #define LOG_LEVEL LOG_LEVEL_VERBOSE
 #define DEBUG LOG_LEVEL >= LOG_LEVEL_VERBOSE
+
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
@@ -28,13 +29,19 @@ WiFiManager wifiManager;
 Neotimer enabled_timer;
 Neotimer message_timer = Neotimer(60000);
 
-char request_buffer[512] = {0};
+char request_buffer[256] = {0};
 ESP8266WiFiMulti WiFiMulti;
 WebSocketsClient webSocket;
 uint32_t id;
 uint32_t club_id;
 EEPROM_Config config = {{0}, {0}};
 String token = "";
+
+WiFiManagerParameter host = nullptr;
+bool settings_save_needed = false;
+
+String host_url = "";
+String wss_uri = "";
 
 // display also uses this state for it is passed by-pointer
 uint8_t state = AppState::BOOTING;
@@ -43,124 +50,12 @@ uint8_t last_state = AppState::BOOTING;
 Display display(u8g2, &state);
 Neotimer terminated_message_timer = Neotimer(15000);
 
-void enable_hdmi(){
-    analogWrite(D0, 0);
-    //digitalWrite(D7, HIGH);
-    analogWrite(D6, 0);
-}
-
-void disable_hdmi(){
-    analogWrite(D0, 128);
-    //digitalWrite(D7, HIGH);
-    analogWrite(D6, 128);
-}
-
-
-void heap_stats() {
-    uint32_t hfree;
-    uint16_t hmax;
-    uint8_t hfrag;
-    EspClass::getHeapStats(&hfree, &hmax, &hfrag);
-    Log.verboseln("Free heap %d max heap %d frag %d", hfree, hmax, hfrag);
-}
-
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-    switch(type) {
-        case WStype_t::WStype_DISCONNECTED:
-            Log.noticeln(F("[WSc] Disconnected!\n"));
-            break;
-        case WStype_t::WStype_CONNECTED: {
-            Log.noticeln(F("[WSc] Connected to url: %s\n"),  payload);
-            DynamicJsonDocument login(256);
-            JsonObject params = login.createNestedObject("params");
-            params["token"] = token;
-            params["name"] = "js";
-            login["id"] = 1;
-            serializeJson(login, request_buffer);
-            Log.noticeln(F("[WSc] Sending payload: %s"),  request_buffer);
-            webSocket.sendTXT(request_buffer);
-
-            DynamicJsonDocument subscribe(96);
-            subscribe["method"] = 1;
-            String channel = "";
-            channel.reserve(32);
-            channel =  (String) "club" + club_id + "#" + id;
-            subscribe["params"]["channel"] = channel;
-            subscribe["id"] = 2;
-            serializeJson(subscribe, request_buffer);
-            Log.noticeln(F("[WSc] Sending payload: %s"),  request_buffer);
-            webSocket.sendTXT(request_buffer);
-        }
-            break;
-        case WStype_t::WStype_TEXT: {
-            heap_stats();
-            Log.noticeln(F("[WSc] get text: %s\n"), payload);
-            StaticJsonDocument<64> filter;
-            filter["result"]["data"]["data"] = true;
-            DynamicJsonDocument doc(128);
-            deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-
-            String command = doc["result"]["data"]["data"]["command"];
-            switch(command_map.count(command)?command_map[command]: -1) {
-                case Commands::START: {
-                    unsigned long start = doc["result"]["data"]["data"]["message"]["time"];
-                    Log.noticeln(F("Got a start for %d sec"), start);
-                    enabled_timer.set(start * 1000);
-                    enabled_timer.start();
-                    state=AppState::ACTIVE;
-                    Log.noticeln(F("Changing state to %d"), state);
-                    enable_hdmi();
-                    break;
-                }
-                case Commands::STOP: {
-                    if (state != AppState::ACTIVE){
-                        break;
-                    }
-                    terminated_message_timer.start();
-                    String text = doc["result"]["data"]["data"]["message"]["reason"];
-                    Log.noticeln(F("Stopped with reason %s"), text.c_str());
-                    enabled_timer.stop();
-                    display.message = text;
-                    state=AppState::IDLE;
-                    Log.noticeln(F("Changing state to %d"), state);
-                    disable_hdmi();
-                    break;
-                }
-                case Commands::MESSAGE: {
-                    message_timer.start();
-                    String text = doc["result"]["data"]["data"]["message"]["text"];
-                    Log.noticeln(F("Got a message %s"), text.c_str());
-                    last_state=state;
-                    state=AppState::GOT_MESSAGE;
-                    display.message = text;
-                    Log.noticeln(F("Changing state to %d"), state);
-                    break;
-                }
-                case Commands::ADD_TIME: {
-                    long time = doc["result"]["data"]["data"]["message"]["time"];
-                    Log.noticeln(F("Add time %d"), time);
-                    time *= 1000;
-                    unsigned long timer_time = enabled_timer.get();
-                    // prevent underflow here
-                    enabled_timer.set(time < 0 && timer_time < -time ? 0 : (enabled_timer.get() + time) );
-                    break;
-                }
-                case -1:
-                    String pretty;
-                    serializeJsonPretty(doc, pretty);
-                    Log.noticeln(F("[WSc] Malformed input: %s\n"), pretty.c_str());
-            }
-            Log.noticeln(F("[WSc] get text: %s\n"), payload);
-        }
-            break;
-        default:
-            break;
-    }
-}
-
-void save_config() {
-
-}
+void enable_hdmi();
+void disable_hdmi();
+void heap_stats();
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
+void save_config();
+void generate_ap_name(EEPROM_Config * config, char ap_name[17]);
 
 void setup() {
     pinMode(D0, OUTPUT);
@@ -173,13 +68,8 @@ void setup() {
     wifiManager.setDebugOutput(DEBUG);
     wifiManager.setBreakAfterConfig(true);
     wifiManager.setSaveConfigCallback(save_config);
-
-    WiFiManagerParameter uuid_param("uuid", "uuid", "", UUID_LEN);
-    WiFiManagerParameter host("host", "host", REST_);
-
     Serial.setDebugOutput(DEBUG);
     display.begin();
-
     display.message = "Initialising...";
     display.draw();
 
@@ -191,19 +81,26 @@ void setup() {
 
     Log.verboseln(F("Fetching UUID"));
 
-    fetch_parameters(&config);
+    if (is_first_launch()) {
+        generate_default_settings(&config);
+        store_settings(&config);
+    }
+    fetch_settings(&config);
+    host = WiFiManagerParameter("host", "host", config.host, REST_HOST_LEN+1);
+    wifiManager.addParameter(&host);
+
     // 12 from UUID + 4 from KVM- + 1 terminator
-    char ap_name[17] = "KVM";
-    memcpy(ap_name+3, config.uuid + 23, 13);
+    char ap_name[17] = {0};
+    generate_ap_name(&config, ap_name);
 
     Log.verboseln(F("Launching captive portal with AP name %s"), ap_name);
 
-    // Force wifi manager to abandon the captive portal on the first try really fast
+    // Force wi-fi manager to abandon the captive portal on the first try really fast
     // This call will succeed if there are saved creds and will fail if there are none
     // Thus we can show a message. Hacky, but I can not use their connectWifi function to do it properly :(
     wifiManager.setConfigPortalTimeout(1);
     if (!wifiManager.autoConnect(ap_name, AP_PASSWORD)) {
-        wifiManager.setConfigPortalTimeout(120);
+        wifiManager.setConfigPortalTimeout(CONFIG_PORTAL_TIMEOUT);
         display.message = (String)"Connect to " + ap_name + " and configure WiFI";
         display.draw();
         bool res = wifiManager.autoConnect(ap_name, AP_PASSWORD);
@@ -247,18 +144,38 @@ void setup() {
     display.message = "Authorising...";
     display.draw();
     Log.noticeln(F("Activating the device"));
-    activate_device(String(con ), &club_id, display);
+
+    activate_device(config.host, String(config.uuid), &host_url, &wss_uri, &club_id, display);
     heap_stats();
 
     Log.noticeln(F("Authorizing the device to club %d"), club_id);
-    authorize_device(uuid, club_id, &token, &id, display);
+    authorize_device(host_url, config.uuid, club_id, &token, &id, display);
     heap_stats();
 
     Log.verboseln(F("Testing token"));
-    test_token(token, display);
+    test_token(host_url, token, display);
     heap_stats();
     Log.verboseln(F("Connecting to WSS"));
-    webSocket.beginSSL(WSS_HOST, WSS_PORT, WSS_URL);
+
+    int8_t start_index = (int8_t)wss_uri.indexOf(":");
+    if (start_index != -1) {
+        int8_t res = (int8_t)memcmp(&wss_uri.c_str()[start_index], "://", 3);
+        start_index = res == 0 ? (int8_t)start_index + 2 : 0;
+    } else {
+        start_index = 0;
+    }
+
+    auto port_start = (int8_t)wss_uri.indexOf(":", start_index);
+    auto url_start =(int8_t)wss_uri.indexOf("/", port_start);
+    url_start = url_start == -1 ? (int8_t)wss_uri.length() : url_start;
+
+    String wss_host = wss_uri.substring(start_index+1, port_start);
+    String wss_port = wss_uri.substring(port_start+1, url_start);
+    String wss_url = wss_uri.substring(url_start);
+
+    Log.verboseln(F("Attempting a connection to %s on port %s with url %s"), wss_host.c_str(), wss_port.c_str(), wss_url.c_str());
+
+    webSocket.beginSSL(wss_host.c_str(), wss_port.toInt(), wss_url.c_str());
     webSocket.onEvent(webSocketEvent);
     display.message = "Done initialisation.";
     display.draw();
@@ -301,18 +218,160 @@ void loop() {
 
     // display accepts state as a pointer, so no need to update it explicitly for the display as well
     display.draw();
-
     webSocket.loop();
 
+    // check serial commands
     if (Serial.available()) {
+        webSocket.disconnect();
         char buffer[10] = {0};
+        heap_stats();
         Serial.readBytesUntil('\n', buffer, 10);
-
+        Log.verboseln(F("Got serial command: %s"), buffer);
         if (strcmp(buffer, SERIAL_CONFIG_COMMAND) != 0) {
             return;
         }
 
-
+        char ap_name[17] = {0};
+        generate_ap_name(&config, ap_name);
+        wifiManager.setConfigPortalTimeout(CONFIG_PORTAL_TIMEOUT);\
+        heap_stats();
+        bool res = wifiManager.startConfigPortal(ap_name, AP_PASSWORD);
+        if (!res) {
+            reboot((char*)NO_WIFI_CONFIGURED, display);
+        }
+        reboot((char*)APPLY_SETTINGS, display);
     }
 
+    //save parameters
+    if (settings_save_needed) {
+        Log.verboseln(F("Initiating settings save"));
+        memcpy(config.host, host.getValue(), host.getValueLength());
+        store_settings(&config);
+        settings_save_needed = false;
+        Log.verboseln(F("Settings save completed"));
+    }
+
+}
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+    DynamicJsonDocument payload_doc(256);
+    switch(type) {
+        case WStype_t::WStype_DISCONNECTED:
+            Log.noticeln(F("[WSc] Disconnected!\n"));
+            break;
+        case WStype_t::WStype_CONNECTED: {
+            Log.noticeln(F("[WSc] Connected to url: %s\n"),  payload);
+            JsonObject params = payload_doc.createNestedObject("params");
+            params["token"] = token;
+            params["name"] = "js";
+            payload_doc["id"] = 1;
+            serializeJson(payload_doc, request_buffer);
+            Log.noticeln(F("[WSc] Sending payload: %s"),  request_buffer);
+            webSocket.sendTXT(request_buffer);
+
+            DynamicJsonDocument subscribe(96);
+            subscribe["method"] = 1;
+            String channel = "";
+            channel.reserve(32);
+            channel =  (String) "club" + club_id + "#" + id;
+            subscribe["params"]["channel"] = channel;
+            subscribe["id"] = 2;
+            serializeJson(subscribe, request_buffer);
+            Log.noticeln(F("[WSc] Sending payload: %s"),  request_buffer);
+            webSocket.sendTXT(request_buffer);
+        }
+            break;
+        case WStype_t::WStype_TEXT: {
+            heap_stats();
+            Log.noticeln(F("[WSc] get text: %s\n"), payload);
+            StaticJsonDocument<64> filter;
+            filter["result"]["data"]["data"] = true;
+            deserializeJson(payload_doc, payload, DeserializationOption::Filter(filter));
+
+            String command = payload_doc["result"]["data"]["data"]["command"];
+            switch(command_map.count(command)?command_map[command]: -1) {
+                case Commands::START: {
+                    unsigned long start = payload_doc["result"]["data"]["data"]["message"]["time"];
+                    Log.noticeln(F("Got a start for %d sec"), start);
+                    enabled_timer.set(start * 1000);
+                    enabled_timer.start();
+                    state=AppState::ACTIVE;
+                    Log.noticeln(F("Changing state to %d"), state);
+                    enable_hdmi();
+                    break;
+                }
+                case Commands::STOP: {
+                    if (state != AppState::ACTIVE){
+                        break;
+                    }
+                    terminated_message_timer.start();
+                    String text = payload_doc["result"]["data"]["data"]["message"]["reason"];
+                    Log.noticeln(F("Stopped with reason %s"), text.c_str());
+                    enabled_timer.stop();
+                    display.message = text;
+                    state=AppState::IDLE;
+                    Log.noticeln(F("Changing state to %d"), state);
+                    disable_hdmi();
+                    break;
+                }
+                case Commands::MESSAGE: {
+                    message_timer.start();
+                    String text = payload_doc["result"]["data"]["data"]["message"]["text"];
+                    Log.noticeln(F("Got a message %s"), text.c_str());
+                    last_state=state;
+                    state=AppState::GOT_MESSAGE;
+                    display.message = text;
+                    Log.noticeln(F("Changing state to %d"), state);
+                    break;
+                }
+                case Commands::ADD_TIME: {
+                    long time = payload_doc["result"]["data"]["data"]["message"]["time"];
+                    Log.noticeln(F("Add time %d"), time);
+                    time *= 1000;
+                    unsigned long timer_time = enabled_timer.get();
+                    // prevent underflow here
+                    enabled_timer.set(time < 0 && timer_time < -time ? 0 : (enabled_timer.get() + time) );
+                    break;
+                }
+                case -1:
+                    String pretty;
+                    serializeJsonPretty(payload_doc, pretty);
+                    Log.noticeln(F("[WSc] Malformed input: %s\n"), pretty.c_str());
+            }
+            Log.noticeln(F("[WSc] get text: %s\n"), payload);
+        }
+            break;
+        default:
+            break;
+    }
+}
+
+void enable_hdmi(){
+    analogWrite(D0, 0);
+    //digitalWrite(D7, HIGH);
+    analogWrite(D6, 0);
+}
+
+void disable_hdmi(){
+    analogWrite(D0, 128);
+    //digitalWrite(D7, HIGH);
+    analogWrite(D6, 128);
+}
+
+
+void heap_stats() {
+    uint32_t hfree;
+    uint16_t hmax;
+    uint8_t hfrag;
+    EspClass::getHeapStats(&hfree, &hmax, &hfrag);
+    Log.verboseln("Free heap %d max heap %d frag %d", hfree, hmax, hfrag);
+}
+
+void save_config(){
+    settings_save_needed = true;
+}
+
+void generate_ap_name(EEPROM_Config * conf, char ap_name[17]) {
+    memcpy(ap_name, "KVM", 3);
+    memcpy(ap_name+3, conf->uuid + 23, 13);
 }
