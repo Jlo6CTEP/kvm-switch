@@ -1,4 +1,4 @@
 .pio
 CMakeListsPrivate.txt
 cmake-build-*/ 
-!".pio/libdeps/nodemcu/ESP8266 IoT Framework"
+!.pio/libdeps/nodemcu/ESP8266\ IoT\ Framework
