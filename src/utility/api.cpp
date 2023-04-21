@@ -11,6 +11,10 @@
 #include "reboot_reasons.h"
 #include "app/display.h"
 
+#define RESPONSE_BUFFER_LEN 512
+#define MFLN_BUFFER_LEN 4096
+char response_buffer[RESPONSE_BUFFER_LEN];
+
 void reboot(char * reason, Display display) {
     Log.verboseln(F("Rebooting, reason: %s"), reason);
     display.message=reason;
@@ -20,39 +24,40 @@ void reboot(char * reason, Display display) {
 }
 
 uint16_t fetch_timezone_offset(Display display) {
-    String response = "";
     retry_if_needed(
-            ([&]() -> uint8_t { return access_api(TIMEZONE_SERVER, GET, &response); }),
+            ([&]() -> uint8_t { return access_api(
+                    TIMEZONE_SERVER, GET, response_buffer, RESPONSE_BUFFER_LEN); }),
             nullptr,
             [&display]() {reboot((char*)TIME_SYNC_ERROR, display);},
             RETRY_COUNT
     );
-    uint16_t time_offset = strtol(response.c_str(), nullptr, 10);
+    Log.verboseln(F("Done with retry"));
+    uint16_t time_offset = strtol(response_buffer, nullptr, 10);
     time_offset = 3600 * (time_offset / 100) + 60 * (time_offset % 100);
     return time_offset;
 }
 
-void activate_device(const String &url, const String &uuid, String *rest_url, String *websocket_url, uint32_t *club_id,
-                     Display display) {
+void activate_device(const String &url, const String &uuid, String *rest_url, String *websocket_url,
+                     uint32_t *club_id, const String &code, Display display) {
     char request_buffer[96] = {0};
-    String response = "";
     StaticJsonDocument<64> filter;
     filter["result"]["club_id"] = true;
     filter["result"]["server_url"] = true;
     filter["result"]["websocket_url"] = true;
-    DynamicJsonDocument doc(96);
-    DynamicJsonDocument activation(192);
+    StaticJsonDocument<96> doc;
+    StaticJsonDocument<192> activation;
     doc["uuid"] = uuid;
-    doc["code"] = CODE;
+    doc["code"] = code;
     serializeJson(doc, request_buffer);
     retry_if_needed(
-            ([&response, &request_buffer, &activation, &filter, &url]() -> uint8_t {
-                int8_t resp = access_api((url+ACTIVATE).c_str(), POST, &response, request_buffer,
-                                         {{(char *) "Content-Type", (char *) "application/json"}});
+            ([&request_buffer, &activation, &filter, &url]() -> uint8_t {
+                int8_t resp = access_api(
+                        (url+ACTIVATE).c_str(), POST, response_buffer, RESPONSE_BUFFER_LEN, request_buffer,
+                        {{(char *) "Content-Type", (char *) "application/json"}}, MFLN_BUFFER_LEN);
                 if (resp == -1) return -1;
-                resp = chunked_read(response, &response);
+                resp = chunked_read(response_buffer, response_buffer, RESPONSE_BUFFER_LEN);
                 if (resp == -1) return -1;
-                DeserializationError err = deserializeJson(activation, response, DeserializationOption::Filter(filter));
+                DeserializationError err = deserializeJson(activation, response_buffer, DeserializationOption::Filter(filter));
                 if (err) return -1;
                 return 0;
             }),
@@ -60,7 +65,8 @@ void activate_device(const String &url, const String &uuid, String *rest_url, St
             [&display]() {reboot((char*)ACTIVATION_ERROR, display);},
             5
     );
-    Log.verboseln("Read response %s", response.c_str());
+    Log.verboseln(F("Done with retry"));
+    Log.verboseln(F("Read response %s"), response_buffer);
     *club_id = activation["result"]["club_id"];
     *rest_url = (const char *)activation["result"]["server_url"];
     *websocket_url = (const char *)activation["result"]["websocket_url"];
@@ -69,8 +75,7 @@ void activate_device(const String &url, const String &uuid, String *rest_url, St
 void
 authorize_device(const String &url, const String &uuid, uint32_t club_id, String *token, uint32_t *id, Display display) {
     char request_buffer[96] = {0};
-    String response = "";
-    DynamicJsonDocument auth_request(96);
+    StaticJsonDocument<96> auth_request;
     auth_request["uuid"] = uuid;
     auth_request["shell_ver"] = "1.0.1";
     auth_request["club_id"] = club_id;
@@ -81,15 +86,16 @@ authorize_device(const String &url, const String &uuid, uint32_t club_id, String
     filter["result"]["jwt"] = true;
     filter["result"]["id"] = true;
 
-    DynamicJsonDocument doc(384);
+    StaticJsonDocument<384> doc;
     retry_if_needed(
-            ([&response, &request_buffer, &doc, &filter, &url]() -> uint8_t {
-                int8_t resp = access_api((url+AUTHORIZE).c_str(), POST, &response, request_buffer,
-                                         {{(char *) "Content-Type", (char *) "application/json"}});
+            ([&request_buffer, &doc, &filter, &url]() -> uint8_t {
+                int8_t resp = access_api(
+                        (url+AUTHORIZE).c_str(), POST, response_buffer, RESPONSE_BUFFER_LEN, request_buffer,
+                        {{(char *) "Content-Type", (char *) "application/json"}}, MFLN_BUFFER_LEN);
                 if (resp == -1) return -1;
-                resp = chunked_read(response, &response);
+                resp = chunked_read(response_buffer, response_buffer, RESPONSE_BUFFER_LEN);
                 if (resp == -1) return -1;
-                DeserializationError err = deserializeJson(doc, response, DeserializationOption::Filter(filter));
+                DeserializationError err = deserializeJson(doc, response_buffer, DeserializationOption::Filter(filter));
                 if (err) return -1;
                 return 0;
             }),
@@ -97,16 +103,18 @@ authorize_device(const String &url, const String &uuid, uint32_t club_id, String
             [&display]() {reboot((char*)AUTH_ERROR, display);},
             5
     );
-    Log.verboseln("Read response %s", response.c_str());
+    Log.verboseln("Read response %s", response_buffer);
     *token = (const char *)doc["result"]["jwt"];
     *id = doc["result"]["id"];
 }
 
 void test_token(const String &url, const String &token, Display display) {
-    String response = "";
     retry_if_needed(
-            ([&response, &token, &url]() -> uint8_t {
-                return access_api((url+TEST_JWT).c_str(), GET, &response, "", {{(char *) "jwt", (char *) token.c_str()}});
+            ([&token, &url]() -> uint8_t {
+                return access_api(
+                        (url+TEST_JWT).c_str(), GET, response_buffer,
+                        RESPONSE_BUFFER_LEN, "",
+                        {{(char *) "jwt", (char *) token.c_str()}}, MFLN_BUFFER_LEN);
             }),
             nullptr,
             [&display]() {reboot((char*)TOKEN_ERROR, display);},

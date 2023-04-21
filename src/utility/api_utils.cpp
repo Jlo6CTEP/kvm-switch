@@ -7,9 +7,8 @@
 #include "ArduinoLog.h"
 #include "vector"
 
-int8_t chunked_read(const String& source, String*dest) {
+int8_t chunked_read(const char * source, char * dest, uint16_t buffer_len) {
     int32_t tgt_i = 0;
-    String temp_result;
 
     enum states {
         PARSING_HEADER,
@@ -19,8 +18,10 @@ int8_t chunked_read(const String& source, String*dest) {
     uint8_t state = PARSING_HEADER;
     char chunk_size[10] = {0};
     uint8_t chunk_counter = 0;
-    int32_t length;
-    for (uint32_t src_i = 0; src_i < source.length(); src_i++) {
+    uint16_t length;
+    uint16_t src_i = 0;
+    char current_char = source[0];
+    while (current_char != '\n' || src_i < buffer_len) {
         switch (state) {
             case PARSING_HEADER:
                 chunk_size[chunk_counter] = source[src_i];
@@ -29,7 +30,7 @@ int8_t chunked_read(const String& source, String*dest) {
                     state = PARSING_BODY;
                     length = strtol(chunk_size, nullptr, 16);
                     if (length == 0) {
-                        dest->remove(tgt_i, dest->length());
+                        memset(dest+tgt_i, 0, buffer_len - tgt_i);
                         return 0;
                     }
                     memset(chunk_size, 0, 10);
@@ -37,7 +38,7 @@ int8_t chunked_read(const String& source, String*dest) {
                 }
                 break;
             case PARSING_BODY:
-                dest->setCharAt(tgt_i, source[src_i]);
+                dest[tgt_i] = source[src_i];
                 tgt_i++;
 
                 if (source[src_i + 1] == '\r') {
@@ -49,13 +50,15 @@ int8_t chunked_read(const String& source, String*dest) {
             default:
                 break;
         }
+        src_i++;
+        current_char = source[src_i];
     }
     return  -1;
 }
 
-int8_t access_api(const char * url, methods method, String * response, const char * payload, const std::vector<std::vector<char*>>& headers) {
-
-    fetch.begin(url, true);
+int8_t access_api(const char * url, methods method, char * response, uint16_t response_len,
+                  const char * payload, const std::vector<std::vector<char*>>& headers, int16_t buffer_len) {
+    fetch.begin(url, true, buffer_len);
     for (std::vector<char*> i: headers) {
         fetch.addHeader(i[0], i[1]);
         Log.verboseln(F("Adding header %s: %s"), i[0], i[1]);
@@ -79,9 +82,10 @@ int8_t access_api(const char * url, methods method, String * response, const cha
         fetch.clean();
         return -1;
     }
-    String res = fetch.readString();
-    *response = res;
-    Log.verboseln(F("Received payload: %s"), response->c_str());
+    // -1 for 0 terminator
+    uint16_t read_size = fetch.readBytes(response, response_len-1);
+    response[read_size+1] = '\0';
+    Log.verboseln(F("Received payload: %s"), response);
     fetch.clean();
     return 0;
 }

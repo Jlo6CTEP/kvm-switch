@@ -8,10 +8,12 @@
 
 #define UUID_LEN 36
 #define REST_HOST_LEN 50
+#define CODE_LEN 16
 typedef struct {
     char uuid[UUID_LEN+1];
     char host[REST_HOST_LEN+1];
-} EEPROM_Config;
+    char code[CODE_LEN+1];
+} __attribute__((packed)) EEPROM_Config;
 
 void fetch_settings(EEPROM_Config * config);
 

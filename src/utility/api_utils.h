@@ -17,5 +17,6 @@ enum methods {
     PUT
 };
 
-int8_t chunked_read(const String& source, String * dest);
-int8_t access_api(const char * url, methods method, String * response, const char * payload = "", const std::vector<std::vector<char*>>& headers = {});
+int8_t chunked_read(const char * source, char * dest, uint16_t buffer_len);
+int8_t access_api(const char * url, methods method, char * response, uint16_t response_len,
+                  const char * payload = "", const std::vector<std::vector<char*>>& headers = {}, int16_t buffer_len = -1);
