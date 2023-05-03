@@ -38,14 +38,15 @@ uint16_t fetch_timezone_offset(Display display) {
 }
 
 void activate_device(const String &url, const String &uuid, String *rest_url, String *websocket_url,
-                     uint32_t *club_id, const String &code, Display display) {
+                     uint32_t *club_id, const String &code, int32_t *time_offset, Display display) {
     char request_buffer[96] = {0};
-    StaticJsonDocument<64> filter;
+    StaticJsonDocument<128> filter;
     filter["result"]["club_id"] = true;
     filter["result"]["server_url"] = true;
     filter["result"]["websocket_url"] = true;
+    filter["result"]["utc_offset"] = true;
     StaticJsonDocument<96> doc;
-    StaticJsonDocument<192> activation;
+    StaticJsonDocument<256> activation;
     doc["uuid"] = uuid;
     doc["code"] = code;
     serializeJson(doc, request_buffer);
@@ -70,6 +71,7 @@ void activate_device(const String &url, const String &uuid, String *rest_url, St
     *club_id = activation["result"]["club_id"];
     *rest_url = (const char *)activation["result"]["server_url"];
     *websocket_url = (const char *)activation["result"]["websocket_url"];
+    *time_offset=activation["result"]["utc_offset"];
 }
 
 void

@@ -17,19 +17,36 @@ Display::Display(U8G2 display, const uint8_t *state) {
 
 int8_t Display::draw() {
     display.firstPage();
-    char timebuff[9] = {0};
     do {
+        char timebuff[12] = {0};
         uint8_t footer = height - display.getMaxCharHeight() - 2;
         display.drawHLine(0, footer, width);
-        sprintf(timebuff, "%02d:%02d:%02d", hour(time_remaining), minute(time_remaining), second(time_remaining));
+        if (day(time_remaining) != 0) {
+            sprintf(timebuff, "%02d:%02d:%02d:%02d",
+                    day(time_remaining),
+                    hour(time_remaining),
+                    minute(time_remaining),
+                    second(time_remaining)
+            );
+        } else {
+            sprintf(timebuff, "%02d:%02d:%02d",
+                    hour(time_remaining),
+                    minute(time_remaining),
+                    second(time_remaining)
+            );
+        }
         if (*state == AppState::ACTIVE) {
-            display.setFont(u8g2_font_ncenB18_te);
+            if (day(time_remaining) != 0) {
+                display.setFont(u8g2_font_profont17_tr);
+            } else {
+                display.setFont(u8g2_font_profont22_tr);
+            }
             display.drawStr(
-                    width / 2 - (display.getStrWidth(timebuff))/2,
+                    width / 2 - (display.getStrWidth(timebuff)) / 2,
                     (height - footer) / 2  + display.getMaxCharHeight() / 2,
                     timebuff);
         } else if (*state != AppState::ACTIVE) {
-            display.setFont(u8g2_font_ncenB08_tr);
+            display.setFont(u8g2_font_profont12_tr);
             String buffer = "";
             buffer.reserve(128);
             uint8_t multiplier = 1;
@@ -61,7 +78,7 @@ int8_t Display::draw() {
         }
         if (time_now != 0) {
             sprintf(timebuff, "%02d:%02d:%02d", hour(time_now), minute(time_now), second(time_now));
-            display.setFont(u8g2_font_ncenB10_tr);
+            display.setFont(u8g2_font_profont15_tr);
             display.drawStr(
                     width - display.getStrWidth(timebuff),
                     height,

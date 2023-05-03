@@ -31,8 +31,8 @@ WiFiManager wifiManager;
 Neotimer enabled_timer;
 Neotimer message_timer = Neotimer(60000);
 
-WiFiManagerParameter setting_host = WiFiManagerParameter("host", "host", REST_HOST, REST_HOST_LEN);
-WiFiManagerParameter setting_code = WiFiManagerParameter("code", "code", CODE, CODE_LEN);
+WiFiManagerParameter *setting_host = nullptr;
+WiFiManagerParameter *setting_code = nullptr;
 
 char request_buffer[256] = {0};
 ESP8266WiFiMulti WiFiMulti;
@@ -60,6 +60,7 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 void save_config();
 void generate_ap_name(EEPROM_Config * config, char ap_name[17]);
 void attempt_config();
+void attempt_connect_to_saved_network();
 
 void setup() {
     pinMode(D0, OUTPUT);
@@ -90,8 +91,10 @@ void setup() {
         store_settings(&config);
     }
     fetch_settings(&config);
-    wifiManager.addParameter(&setting_host);
-    wifiManager.addParameter(&setting_code);
+    setting_code = new WiFiManagerParameter("code", "code", config.code, CODE_LEN);
+    setting_host = new WiFiManagerParameter("host", "host", config.host, REST_HOST_LEN);
+    wifiManager.addParameter(setting_host);
+    wifiManager.addParameter(setting_code);
 
     for(uint8_t t = 0; t < 10; t++) {
         attempt_config();
@@ -105,13 +108,11 @@ void setup() {
     char ap_name[17] = {0};
     generate_ap_name(&config, ap_name);
 
-    Log.verboseln(F("Launching captive portal with AP name %s"), ap_name);
-
-    // Force wi-fi manager to abandon the captive portal on the first try really fast
-    // This call will succeed if there are saved creds and will fail if there are none
-    // Thus we can show a message. Hacky, but I can not use their connectWifi function to do it properly :(
-    wifiManager.setConfigPortalTimeout(1);
-    if (!wifiManager.autoConnect(ap_name, AP_PASSWORD)) {
+    display.message = "Connecting to WiFi...";
+    display.draw();
+    attempt_connect_to_saved_network();
+    if (WiFi.status() != WL_CONNECTED) {
+        Log.verboseln(F("Launching captive portal with AP name %s"), ap_name);
         wifiManager.setConfigPortalTimeout(CONFIG_PORTAL_TIMEOUT);
         display.message = (String)"Connect to " + ap_name + " and configure WiFI";
         display.draw();
@@ -119,16 +120,10 @@ void setup() {
         if (!res) {
             reboot((char*)NO_WIFI_CONFIGURED, display);
         }
-    }
 
-    display.message = "Connecting to WiFi...";
-    display.draw();
-
-    uint8_t count = 0;
-    while (WiFi.status() != WL_CONNECTED || count < RETRY_COUNT) {
-        delay(1000);
-        Log.noticeln(".");
-        count++;
+        display.message = "Connecting to WiFi...";
+        display.draw();
+        attempt_connect_to_saved_network();
     }
 
     if (WiFi.status() != WL_CONNECTED) {
@@ -142,12 +137,23 @@ void setup() {
 
     heap_stats();
 
-    Log.noticeln(F("Fetching timezone offset"));
+     Log.noticeln(F("Connected to WiFI"));
+    // set TZ
+
     timeSync.begin();
     timeSync.waitForSyncResult();
-    uint16_t time_offset = fetch_timezone_offset(display);
+    //int32_t time_offset = fetch_timezone_offset(display);
+    int32_t time_offset = 0;
+    Log.noticeln(F("Timezone offset %d"), time_offset);
+
+    Log.noticeln(F("Activating the device"));
+    activate_device(config.host, config.uuid, &host_url,
+                    &wss_uri, &club_id, config.code, &time_offset, display);
     timeClient.setTimeOffset(time_offset);
     timeClient.update();
+    display.time_now = timeClient.getEpochTime();
+    display.draw();
+    heap_stats();
 
     heap_stats();
 
@@ -157,8 +163,9 @@ void setup() {
     display.draw();
     Log.noticeln(F("Activating the device"));
 
+    int32_t kek = 0;
     activate_device(config.host, config.uuid, &host_url,
-                    &wss_uri, &club_id, config.code, display);
+                    &wss_uri, &club_id, config.code, &kek, display);
     heap_stats();
 
     Log.noticeln(F("Authorizing the device to club %d"), club_id);
@@ -199,6 +206,21 @@ void setup() {
 }
 
 void loop() {
+
+    // Reconnect if no Wi-Fi
+    if (WiFi.status() != WL_CONNECTED) {
+        for (uint8_t i = 0; i < RETRY_COUNT; i++) {
+            Log.noticeln(F("No wifi connection"));
+            WiFi.reconnect();
+            delay(1000);
+        }
+
+        if (WiFi.status() != WL_CONNECTED) {
+            reboot((char*)NO_WIFI_CONNECTION, display);
+        }
+    }
+
+
     //Remove the termination message when timer expires
     if (terminated_message_timer.done()) {
         terminated_message_timer.stop();
@@ -257,17 +279,14 @@ void attempt_config() {
 
         wifiManager.setConfigPortalTimeout(CONFIG_PORTAL_TIMEOUT);\
         heap_stats();
-        bool res = wifiManager.startConfigPortal(ap_name, AP_PASSWORD);
-        if (!res) {
-            reboot((char*)NO_WIFI_CONFIGURED, display);
-        }
+        wifiManager.startConfigPortal(ap_name, AP_PASSWORD);
     }
 
     if (!settings_save_needed) return;
 
     Log.verboseln(F("Initiating settings save"));
-    strcpy(config.host, setting_host.getValue());
-    strcpy(config.code, setting_code.getValue());
+    strcpy(config.host, setting_host->getValue());
+    strcpy(config.code, setting_code->getValue());
     store_settings(&config);
     settings_save_needed = false;
     Log.verboseln(F("Settings save completed"));
@@ -385,4 +404,14 @@ void save_config(){
 void generate_ap_name(EEPROM_Config * conf, char ap_name[17]) {
     memcpy(ap_name, "KVM", 3);
     memcpy(ap_name+3, conf->uuid + 23, 13);
+}
+
+void attempt_connect_to_saved_network(){
+    uint8_t count = 0;
+    Log.verboseln(F("Attempting connection to %s"), WiFi.SSID().c_str());
+    while (WiFi.waitForConnectResult() != WL_CONNECTED && count < RETRY_COUNT) {
+        Log.noticeln(F("Connection attempt %d"), count+1);
+        count++;
+        WiFi.begin();
+    }
 }

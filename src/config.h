@@ -26,7 +26,7 @@
     #define TIMEZONE_SERVER  "https://ipapi.co/utc_offset/"
     #define CODE "HKU95V6SV"
     #define AP_PASSWORD "kotikiii"
-    #define RETRY_COUNT 5
+    #define RETRY_COUNT 3
     #define CONFIG_PORTAL_TIMEOUT 240
     #define SERIAL_CONFIG_COMMAND "config"
 

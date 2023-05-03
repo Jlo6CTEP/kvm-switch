@@ -6,12 +6,13 @@
 
 #include "certStore.h"
 
-class HTTPRequest {
+class HTTPRequest
+{
 
 public:
     void clean();
 
-    void begin(String url, bool useMFLN = false, int16_t force_buffer_length = -1);
+    void begin(String url, bool useMFLN = false, int16_t force_buffer_size = -1);
 
     int GET(String url);
     int GET();
@@ -23,18 +24,18 @@ public:
     int PATCH(String body);
     int DELETE(String url);
     int DELETE();
-
+    
     bool busy();
     bool available();
     uint8_t read();
     String readString();
-    size_t readBytes(char *buffer, size_t length);
-
+    
     void setAuthorization(const char * user, const char * password);
     void setAuthorization(const char * auth);
     void addHeader(String name, String value);
+    size_t readBytes(char *buffer, size_t length);
 
-private :
+private : 
     BearSSL::CertStoreP certStore;
 
     HTTPClient *http;

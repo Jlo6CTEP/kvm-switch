@@ -1,35 +1,27 @@
 #include "fetch.h"
-#include "ArduinoLog.h"
 
 #include <WiFiClientSecureBearSSL.h>
 
-void HTTPRequest::begin(String url, bool useMFLN, int16_t force_buffer_length) {
+void HTTPRequest::begin(String url, bool useMFLN, int16_t force_buffer_size) {
+    http = new HTTPClient();
 
-    if (http == nullptr) {
-        http = new HTTPClient();
-    }
     if (url[4] == 's') {
-        if (httpsClient == nullptr) {
-            httpsClient = new BearSSL::WiFiClientSecure();
-        }
+        httpsClient = new BearSSL::WiFiClientSecure();
+
         //try MFLN to reduce memory need
-        if (force_buffer_length != -1) {
-            Serial.println(PSTR("MFLN supported"));
-            httpsClient->setBufferSizes(force_buffer_length, force_buffer_length);
-        }
-        else if (useMFLN && httpsClient->probeMaxFragmentLength(url, 443, 512)) {
+        if (force_buffer_size != -1) {
+            httpsClient->setBufferSizes(force_buffer_size, force_buffer_size);
+        } else if (useMFLN && httpsClient->probeMaxFragmentLength(url, 443, 512)) {
             Serial.println(PSTR("MFLN supported"));
             httpsClient->setBufferSizes(512, 512);
-        } else {
-            Serial.println(PSTR("MFLN not supported"));
         }
+
         httpsClient->setCertStore(&certStore);
         http->begin(*httpsClient, url);
+
         client = httpsClient;
     } else {
-        if (client == nullptr) {
-            client = new WiFiClient();
-        }
+        client = new WiFiClient();
         http->begin(*client, url);
     }
 
@@ -81,6 +73,10 @@ int HTTPRequest::DELETE() {
     return http->sendRequest("DELETE");
 }
 
+size_t HTTPRequest::readBytes(char *buffer, size_t length) {
+    return client->readBytes(buffer, length);
+}
+
 bool HTTPRequest::busy() {
     return (client->connected() || client->available());
 }
@@ -97,14 +93,9 @@ String HTTPRequest::readString() {
     return client->readString();
 }
 
-size_t HTTPRequest::readBytes(char *buffer, size_t length) {
-    return client->readBytes(buffer, length);
-}
-
-
 void HTTPRequest::clean() {
-    http->end();
-    client->stop();
+    delete http;
+    delete client;
 }
 
 void HTTPRequest::setAuthorization(const char *user, const char *password) {
